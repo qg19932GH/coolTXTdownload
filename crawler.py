@@ -54,6 +54,7 @@ class Candidate:
     source: str = ""               # 目录 / 搜索 / 目录+搜索 / 起始帖
     start: Optional[int] = None    # 卷起始章节号
     end: Optional[int] = None
+    part: Optional[int] = None     # 同一卷号内的 上/中/下（1/2/3），无则 None
     disp: str = ""                 # 卷号显示覆盖（上/中/下）
     checked: bool = True
     status: str = ""               # 状态说明（重复已排除 / 重叠等）
@@ -69,8 +70,8 @@ class Candidate:
 
     def sort_key(self):
         if self.start is None:
-            return (1, 0, 0, self.date or "")
-        return (0, self.start, self.end or 0, self.date or "")
+            return (1, 0, 0, self.part or 0, self.date or "")
+        return (0, self.start, self.end or 0, self.part or 0, self.date or "")
 
 
 # --------------------------------------------------------------------------- #
@@ -150,23 +151,33 @@ def parse_range(title: str):
 
 
 _PART_MAP = {"上": 1, "中": 2, "下": 3}
-_PART_RE = re.compile(r"[(\[](上|中|下)(?:部|集|篇|卷)?[)\]]")
+_PART_CHAR = {1: "上", 2: "中", 3: "下"}
+_PART_ATTACH_RE = re.compile(r"[(\[](上|中|下|\d{1,4}\s*(?:上|中|下))(?:部|集|篇|卷)?[)\]]")
 
 
 def parse_part(title: str) -> Optional[str]:
-    """从标题识别 上/中/下 分卷（须括在括号里，避免书名中带“中”误判）。"""
-    m = _PART_RE.search(normalize(title))
-    return m.group(1) if m else None
+    """从标题识别分卷部分：`（7下）`（返回 (7, '下')）或纯 `（上）`（返回 (None,'上')）。"""
+    m = _PART_ATTACH_RE.search(normalize(title))
+    if not m:
+        return None
+    token = m.group(1)
+    m2 = re.match(r"(\d{1,4})\s*(上|中|下)$", token)
+    if m2:
+        return (int(m2.group(1)), m2.group(2))
+    return (None, token)
 
 
 def apply_range_or_part(c: "Candidate"):
-    """给候选卷设置区间：优先数字卷号，其次 上/中/下。"""
+    """设置卷区间：数字卷号为主，上/中/下 记入 part（兼容 (7)/(7上)/(7下)、(上)(中)(下)）。"""
     c.start, c.end = parse_range(c.title)
-    if c.start is None:
-        p = parse_part(c.title)
-        if p:
-            c.start = c.end = _PART_MAP[p]
-            c.disp = p
+    pp = parse_part(c.title)
+    if pp:
+        pnum, pchar = pp
+        c.part = _PART_MAP[pchar]
+        if c.start is not None:
+            c.disp = f"({c.start}{pchar})"
+        else:                       # 纯 上/中/下，无章号：不参与章号对账
+            c.disp = pchar
 
 
 def _merge_intervals(items):
@@ -202,7 +213,17 @@ def coverage_report(cands: List["Candidate"],
                      if c.start is None or c.end is None)
     merged = _merge_intervals(iv)
     covered_n = sum(b - a + 1 for a, b in merged)
-    raw_n = sum(b - a + 1 for a, b in iv)
+    # 重复章数：同区间的多卷里，若含上/中/下分部则为互补内容不算重复；
+    # 完全同区间且 part 相同（用户手动重复勾选）才按重复计
+    by_iv: dict = {}
+    for c in checked:
+        if c.start is None or c.end is None:
+            continue
+        by_iv.setdefault((c.start, c.end), []).append(c.part)
+    raw_n = 0
+    for (a, b), parts in by_iv.items():
+        span = b - a + 1
+        raw_n += span if any(p is not None for p in parts) else span * len(parts)
     overlap_n = raw_n - covered_n
     max_chapter = merged[-1][1] if merged else 0
     min_chapter = merged[0][0] if merged else None
@@ -582,7 +603,7 @@ def auto_dedup(cands: List["Candidate"], log: Callable[[str], None],
     by_range = {}
     for c in cands:
         if c.start is not None:
-            by_range.setdefault((c.start, c.end), []).append(c)
+            by_range.setdefault((c.start, c.end, c.part), []).append(c)
     for key, group in by_range.items():
         if len(group) < 2:
             continue
@@ -613,6 +634,8 @@ def auto_dedup(cands: List["Candidate"], log: Callable[[str], None],
         for b in active:
             if a is b or not b.checked:
                 continue
+            if a.part != b.part:
+                continue   # 同卷号不同上/中/下 = 不同内容，不按覆盖/重叠处理
             if a.start <= b.end and b.start <= a.end:          # 区间重叠
                 b_in_a = b.start >= a.start and b.end <= a.end
                 a_in_b = a.start >= b.start and a.end <= b.end

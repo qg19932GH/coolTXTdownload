@@ -3,6 +3,15 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.2] - 2026-10-06
+
+### Fixed
+- 标题 `（N上）（N中）（N下）`（如 `（7下）`）与同卷主帖 `(N)`（实为该卷上半部分）
+  卷号冲突、被误判“重复卷”取消勾选的问题。现在“卷号 × 上/中/下”是复合标识：
+  互不去重、互不判覆盖、排序上 < 中 < 下，且互补内容不计入“多卷重复”章数。
+- 纯 `（上）（中）（下）` 无章号的卷不再被赋假章号参与完整性对账，
+  改为标注“无章号，不计入”。
+
 ## [1.0.1] - 2026-10-06
 
 ### Added
@@ -14,6 +23,7 @@
 - 发布产物更名为 `coolTXTdownload.exe`（与仓库名一致）。
 
 [1.0.1]: https://github.com/qg19932GH/coolTXTdownload/compare/v1.0.0...v1.0.1
+[1.0.2]: https://github.com/qg19932GH/coolTXTdownload/compare/v1.0.1...v1.0.2
 
 ## [1.0.0] - 2026-10-06
 
