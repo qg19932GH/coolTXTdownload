@@ -90,6 +90,10 @@ python crawler.py download "书名关键词" --out ./out
 
 ### 方式三：自己打包 exe
 
+推 `v*` 标签会自动触发 GitHub Actions 在干净的 Windows 环境打包并把 exe
+挂到该标签的 Release（[Actions](../../actions) 页也可手动触发、下载构建产物）。
+本地打包命令：
+
 ```bash
 pip install pyinstaller
 pyinstaller --noconfirm --onefile --windowed --name coolTXTdownload ^

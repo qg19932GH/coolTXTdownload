@@ -1,0 +1,61 @@
+name: Build Windows EXE
+
+on:
+  push:
+    tags:
+      - "v*"          # 推 v1.0.0 / v1.0.1 之类的标签即触发
+  workflow_dispatch:  # 也可在 Actions 页面手动点“Run workflow”
+
+permissions:
+  contents: write     # 需要创建 Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build EXE (PyInstaller, one-file, windowed)
+        run: >
+          pyinstaller --noconfirm --onefile --windowed
+          --name coolTXTdownload
+          --collect-submodules requests
+          --hidden-import socks
+          --hidden-import bs4
+          app.py
+
+      - name: Smoke test (EXE exists & non-trivial size)
+        shell: pwsh
+        run: |
+          $exe = "dist/coolTXTdownload.exe"
+          if (-not (Test-Path $exe)) { throw "build 未产出 exe" }
+          $mb = (Get-Item $exe).Length / 1MB
+          if ($mb -lt 10) { throw "exe 过小($mb MB)，疑似打包失败" }
+          Write-Host "OK: $exe = $([math]::Round($mb,1)) MB"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coolTXTdownload-windows
+          path: dist/coolTXTdownload.exe
+          if-no-files-found: error
+
+      # 仅当由 tag 触发时，把 exe 作为附件挂到对应 Release
+      - name: Attach EXE to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/coolTXTdownload.exe
+          fail_on_unmatched_files: true
