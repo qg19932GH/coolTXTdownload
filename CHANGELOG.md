@@ -3,6 +3,18 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.1] - 2026-10-06
+
+### Added
+- GitHub Actions CI：推送 `v*` 标签自动在 `windows-latest` 上用 PyInstaller
+  单文件打包 exe，产物上传为构建构件，并自动附加到对应 Release；
+  支持在 Actions 页手动触发。
+
+### Changed
+- 发布产物更名为 `coolTXTdownload.exe`（与仓库名一致）。
+
+[1.0.1]: https://github.com/qg19932GH/coolTXTdownload/compare/v1.0.0...v1.0.1
+
 ## [1.0.0] - 2026-10-06
 
 首次公开发布。
