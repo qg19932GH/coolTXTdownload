@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey.svg" alt="Platform: Windows">
   <img src="https://img.shields.io/badge/GUI-PySide6-informational.svg" alt="GUI: PySide6">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.0.1-orange.svg" alt="Version 1.0.1"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.1.0-orange.svg" alt="Version 1.1.0"></a>
 </p>
 
 一个带图形界面的网页小说整本下载工具：输入 cool18 论坛小说帖子的**任意一个分卷链接**，

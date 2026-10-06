@@ -29,7 +29,7 @@ except ImportError:
     Tag = object
 
 SITE = "https://www.cool18.com"
-__version__ = "1.0.2"
+__version__ = "1.1.0"
 SEARCH_AREA = "全成人区搜索"
 DEFAULT_PROXY = "socks5h://127.0.0.1:10808"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
