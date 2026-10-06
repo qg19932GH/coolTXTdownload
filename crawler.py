@@ -56,6 +56,9 @@ class Candidate:
     end: Optional[int] = None
     part: Optional[int] = None     # 同一卷号内的 上/中/下（1/2/3），无则 None
     disp: str = ""                 # 卷号显示覆盖（上/中/下）
+    verified: bool = False         # 正文中实际核到章节标题（区间可信）
+    empty: bool = False            # 正文近乎为空（占位/删帖），区间不可信
+    dead: bool = False             # 校验时 404/已删除，抓不到内容
     checked: bool = True
     status: str = ""               # 状态说明（重复已排除 / 重叠等）
 
@@ -207,16 +210,19 @@ def coverage_report(cands: List["Candidate"],
       complete      是否无缺漏
     """
     checked = [c for c in cands if c.checked]
-    iv = [(c.start, c.end) for c in checked
+    usable = [c for c in checked
+              if not c.empty and not c.dead]   # 空帖/已删帖不算覆盖
+    iv = [(c.start, c.end) for c in usable
           if c.start is not None and c.end is not None]
     n_no_range = sum(1 for c in checked
-                     if c.start is None or c.end is None)
+                     if c.start is None or c.end is None
+                     or c.empty or c.dead)
     merged = _merge_intervals(iv)
     covered_n = sum(b - a + 1 for a, b in merged)
     # 重复章数：同区间的多卷里，若含上/中/下分部则为互补内容不算重复；
     # 完全同区间且 part 相同（用户手动重复勾选）才按重复计
     by_iv: dict = {}
-    for c in checked:
+    for c in usable:
         if c.start is None or c.end is None:
             continue
         by_iv.setdefault((c.start, c.end), []).append(c.part)
@@ -263,7 +269,8 @@ def format_coverage(rep: dict, declared_max: Optional[int] = None) -> str:
     if rep["overlap_n"]:
         head += f"，多卷重复 {rep['overlap_n']} 章（下载时自动去重）"
     if rep["n_no_range"]:
-        head += f"；另有 {rep['n_no_range']} 卷无章号（全文/上中下，不计入）"
+        head += (f"；另有 {rep['n_no_range']} 卷无章号/空帖"
+                 f"（全文、上中下或占位删帖，不计入）")
     if rep["complete"]:
         head += "。✔ 未发现缺漏章。"
     else:
@@ -273,16 +280,49 @@ def format_coverage(rep: dict, declared_max: Optional[int] = None) -> str:
     return head
 
 
+def _strip_wrapping(s: str) -> str:
+    """剥掉书名外层成对包裹符号：【…】［…］「…」《…》『…』"…"等。
+    作者发帖书名括号常不统一（【书名】/［书名］），保留括号会漏搜。"""
+    pairs = [("【", "】"), ("［", "］"), ("[", "]"), ("「", "」"),
+             ("《", "》"), ("『", "』"), ("“", "”"), ("(", "）"),
+             ("（", ")")]
+    s = s.strip("　 ")
+    changed = True
+    while changed and len(s) >= 2:
+        changed = False
+        for o, c in pairs:
+            if s.startswith(o) and s.endswith(c):        # 外层成对 → 剥
+                s = s[1:-1].strip("　 ")
+                changed = True
+                break
+        if not changed:
+            for o, c in pairs:                            # 落单开头括号
+                if s.startswith(o) and c not in s:
+                    s = s[1:].lstrip("　 ")
+                    changed = True
+                    break
+        if not changed:
+            for o, c in pairs:                            # 落单结尾括号
+                if s.endswith(c) and o not in s:
+                    s = s[:-1].rstrip("　 ")
+                    changed = True
+                    break
+    return s
+
+
 def extract_novel_name(subject: str) -> str:
-    """从主帖标题提取小说名。优先取第一对【】内的文字。"""
-    s = subject.strip()
-    m = re.match(r"\s*【(.+?)】", s)
-    if m:
-        return m.group(1).strip()
+    """从主帖标题提取小说名。优先取开头第一对括号（【「《等）内的文字。"""
+    s = subject.strip().lstrip("　 ")
+    for o, c in [("【", "】"), ("［", "］"), ("「", "」"),
+                 ("《", "》"), ("『", "』")]:               # 逐对严格匹配
+        m = re.match(re.escape(o) + "(.+?)" + re.escape(c), s)
+        if m:
+            return _strip_wrapping(m.group(1))
     # 兜底：去掉卷号区间与作者尾巴
     s = re.sub(r"[（(][^（()）]*?\d[^（()）]*?[)）].*$", "", s)
     s = re.sub(r"(作者|著)\s*[:：].*$", "", s)
-    return s.strip("　 ") or s
+    s = s.strip("　 ") or s
+    return _strip_wrapping(s)
 
 
 def thread_post_url(tid: str) -> str:
@@ -318,13 +358,17 @@ def cn2int(s: str) -> Optional[int]:
 _NUMCHAR = r"[0-9０-９一二三四五六七八九十百千万零两〇]{1,10}"
 _HDR_RES = [
     # 第四十六章 / 第46章 / 第五十二章 玄关 / 第八卷…第1章（优先取“章”）
-    re.compile(rf"^\s*[　]*【?\s*第\s*({_NUMCHAR})\s*[章回卷篇]"),
+    # “回/章/篇”后接常见构词字（回合/回忆/回复…）的不算章节
+    re.compile(rf"^\s*[　]*【?\s*第\s*({_NUMCHAR})\s*[章回卷篇](?!合|忆|复|答|信|去|家|音|憶)"),
     # 四十六章 疑点 / 46章（不带“第”，数字与“章”之间不允许空格，行必须短）
     re.compile(rf"^\s*[　]*({_NUMCHAR})章[^。！？，；…]{{0,36}}$"),
+    # 29章 • 标题 / 30章：标题（数字章+分隔符，标题里允许逗号问号）
+    re.compile(r"^\s*([0-9]{1,4})章\s*[•·:：、]\s*[^\n]{0,40}$"),
     # Chapter 46
     re.compile(r"^\s*[　]*chapter\s*([0-9]{1,4})", re.I),
 ]
-_ANY_DI_RE = re.compile(rf"第\s*({_NUMCHAR})\s*([章回卷篇])")
+_ANY_DI_RE = re.compile(
+    rf"第\s*({_NUMCHAR})\s*([章回卷篇])(?!合|忆|复|答|信|去|家|音)")
 _HDR_KEYWORD_RE = re.compile(
     r"^\s*[　]*【?\s*(楔子|序章|序幕|引子|前言|后序|后记|尾声|终章|结局|番外)"
     r"[^\n]{0,18}$")
@@ -570,18 +614,63 @@ def fuzzy_search(name: str, known_tids: set, session,
     return found
 
 
+def adopt_part_from_body(c: "Candidate", txt: str,
+                         log: Callable[[str], None] = lambda m: None,
+                         label: str = "") -> bool:
+    """发帖外标题的卷号可能漏写 上/中/下，但正文首行一般写全（如（7上））——
+    以正文首行的括号卷号为准补标 part/disp。"""
+    for ln in txt.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        pp = parse_part(ln) if len(ln) <= 120 else None
+        if pp and c.part is None:
+            pnum, pchar = pp
+            if pnum is not None and (c.start is None or pnum == c.start):
+                if c.start is None:
+                    c.start = c.end = pnum
+                c.part = _PART_MAP[pchar]
+                c.disp = f"({c.start}{pchar})"
+                log(f"  {label}tid {c.tid}: 正文首行补标卷号 {c.disp}")
+                return True
+            if pnum is None and c.start is None:
+                c.part = _PART_MAP[pchar]
+                c.disp = pchar
+                log(f"  {label}tid {c.tid}: 正文首行补标卷号 {c.disp}")
+                return True
+        break
+    return False
+
+
 def _verify_one(c: "Candidate", session, log: Callable[[str], None],
                 cancel, label: str = "") -> None:
     """读正文，用实际章节号覆盖该卷区间（发帖标题的卷号经常不准）。"""
     if cancel and cancel.is_set():
         raise FetchError("已取消")
     rng = None
+    body = None
     try:
         info = parse_thread(fetch(c.href or thread_post_url(c.tid), session))
-        rng = real_chapter_range(html_to_text(info["body_html"]))
+        body = html_to_text(info["body_html"])
+        rng = real_chapter_range(body)
+    except NotFoundError as e:  # noqa: BLE001
+        log(f"  {label}tid {c.tid} 校验失败({e})，沿用标题卷号")
+        c.dead = True
+        c.checked = False
+        c.status = (c.status + "; " if c.status else "") + \
+            "帖子疑似已删除（404），下载会失败，如有误请手动勾回"
     except Exception as e:  # noqa: BLE001
         log(f"  {label}tid {c.tid} 校验失败({e})，沿用标题卷号")
+        c.status = (c.status + "; " if c.status else "") + \
+            f"校验失败（{type(e).__name__}），卷号沿用标题"
+    if body is not None and len(re.sub(r"\s+", "", body)) < 100:
+        c.empty = True
+        c.checked = False
+        c.status = (c.status + "; " if c.status else "") + \
+            "正文为空（占位/删帖），不计入覆盖，如有误请手动勾回"
+        log(f"  {label}tid {c.tid}: 正文为空（占位/删帖），已默认不勾选")
     if rng:
+        c.verified = True
         rs, re_, n, style = rng
         title_rng = c.range_text()
         tag = f"{n}章" + (f"，按「{style}」识别" if style != "标题" else "")
@@ -595,11 +684,26 @@ def _verify_one(c: "Candidate", session, log: Callable[[str], None],
         c.start, c.end = rs, re_
     elif c.start is None:
         log(f"  {label}tid {c.tid}: 未识别到章节标题")
+    if c.part is None and body:
+        adopt_part_from_body(c, body, log, label)
 
 
 def auto_dedup(cands: List["Candidate"], log: Callable[[str], None],
                verbose: bool = True) -> None:
     """按实际章节区间去重：相同卷号去重 / 完全覆盖排除 / 部分重叠提示。"""
+    # 裸卷号与同章节的 (N中)/(N下) 并存、且无显式 (N上) 时 → 裸卷几乎必是上半部，补标“上”
+    single = {}
+    for c in cands:
+        if c.start is not None and c.end == c.start:
+            single.setdefault((c.start, c.end), []).append(c)
+    for grp in single.values():
+        parts = {c.part for c in grp}
+        if None in parts and 1 not in parts and any(p and p >= 2 for p in parts):
+            for c in grp:
+                if c.part is None:
+                    c.part = 1
+                    c.disp = f"({c.start}上)"
+
     by_range = {}
     for c in cands:
         if c.start is not None:
@@ -607,14 +711,19 @@ def auto_dedup(cands: List["Candidate"], log: Callable[[str], None],
     for key, group in by_range.items():
         if len(group) < 2:
             continue
-        # 保留优先级：非模糊 > 目录收录 > 日期新
-        group.sort(key=lambda c: (c.source != "模糊",
+        # 保留优先级：能打开(非404) > 正文已核实 > 非空帖 > 非模糊 > 目录收录 > 日期新
+        group.sort(key=lambda c: (not c.dead, c.verified, not c.empty,
+                                  c.source != "模糊",
                                   "目录" in c.source, c.date or ""),
                    reverse=True)
         keep = group[0]
+        if not keep.dead and not keep.empty:
+            keep.checked = True
         for c in group[1:]:
             c.checked = False
-            c.status = f"重复卷，已选 tid {keep.tid}"
+            msg = f"重复卷，已选 tid {keep.tid}"
+            if msg not in c.status:
+                c.status = (c.status + "; " if c.status else "") + msg
         if verbose:
             log(f"卷 {keep.range_text()} 有 {len(group)} 帖，保留 tid "
                 f"{keep.tid}，排除 {[c.tid for c in group[1:]]}")
@@ -628,6 +737,17 @@ def auto_dedup(cands: List["Candidate"], log: Callable[[str], None],
 
     active = [c for c in cands if c.checked and c.start is not None]
     pair_done = set()
+
+    def title_mismatch(c: "Candidate") -> bool:
+        """正文核准范围与发帖标题声明不一致（合集帖/错标题）→ 不做自动取消。"""
+        t = parse_range(c.title)
+        return (t[0] is not None and
+                (t[0], t[1]) != (c.start, c.end))
+
+    def untrust(c: "Candidate") -> bool:
+        # 正文未核到章节的卷（占位帖/无标题全文帖）区间不可信
+        return c.empty or not c.verified
+
     for a in active:
         if not a.checked:
             continue
@@ -640,12 +760,42 @@ def auto_dedup(cands: List["Candidate"], log: Callable[[str], None],
                 b_in_a = b.start >= a.start and b.end <= a.end
                 a_in_b = a.start >= b.start and a.end <= b.end
                 if b_in_a and not a_in_b:
+                    if untrust(a):
+                        add_status(b, f"与 {a.range_text()} 重叠，但对方正文"
+                                      f"未核到章节，未自动取消")
+                        if verbose:
+                            log(f"卷 {b.range_text()} 与 {a.range_text()} 重叠，"
+                                f"但容器帖正文未核到章节，保留双选")
+                        continue
+                    if title_mismatch(a) or title_mismatch(b):
+                        add_status(b, f"内容含于 {a.range_text()}（标题不符，"
+                                      f"未自动取消，下载时按章节去重）")
+                        if verbose:
+                            log(f"卷 {b.range_text()} 含于 {a.range_text()}，"
+                                f"但两帖标题与正文有出入，保留双选，"
+                                f"下载时按章节去重")
+                        continue
                     b.checked = False
                     add_status(b, f"内容被 {a.range_text()} 覆盖")
                     if verbose:
                         log(f"卷 {b.range_text()} (tid {b.tid}) 被 "
                             f"{a.range_text()} (tid {a.tid}) 覆盖，已取消勾选")
                 elif a_in_b and not b_in_a:
+                    if untrust(b):
+                        add_status(a, f"与 {b.range_text()} 重叠，但对方正文"
+                                      f"未核到章节，未自动取消")
+                        if verbose:
+                            log(f"卷 {a.range_text()} 与 {b.range_text()} 重叠，"
+                                f"但容器帖正文未核到章节，保留双选")
+                        continue
+                    if title_mismatch(a) or title_mismatch(b):
+                        add_status(a, f"内容含于 {b.range_text()}（标题不符，"
+                                      f"未自动取消，下载时按章节去重）")
+                        if verbose:
+                            log(f"卷 {a.range_text()} 含于 {b.range_text()}，"
+                                f"但两帖标题与正文有出入，保留双选，"
+                                f"下载时按章节去重")
+                        continue
                     a.checked = False
                     add_status(a, f"内容被 {b.range_text()} 覆盖")
                     if verbose:
@@ -665,10 +815,12 @@ def auto_dedup(cands: List["Candidate"], log: Callable[[str], None],
                         log(f"卷 {a.range_text()} 与 {b.range_text()} "
                             f"部分重叠，保留两卷，下载时按章节去重")
 
-    if cands and all(not c.checked for c in cands) and \
-            any(c.source != "模糊" for c in cands):
-        for c in cands:
-            if c.source != "模糊":
+    # 最后保险：若全部未勾选，把可用卷（非模糊、非404、非空帖）全部勾回
+    if cands and all(not c.checked for c in cands):
+        rescue = [c for c in cands
+                  if c.source != "模糊" and not c.dead and not c.empty]
+        if rescue:
+            for c in rescue:
                 c.checked, c.status = True, ""
 
 
